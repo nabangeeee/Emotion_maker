@@ -64,7 +64,7 @@ class AIService {
       throw new Error('API 키가 설정되지 않았습니다.');
     }
 
-    const modelName = 'gemini-2.5-flash-image';
+    const modelName = 'gemini-3-pro-image-preview';
     const aspectRatio = this.getAspectRatio(options.width, options.height);
 
     console.log('이미지 생성 요청:', {
@@ -72,11 +72,15 @@ class AIService {
       aspectRatio: aspectRatio,
       promptLength: options.prompt.length,
       hasApiKey: !!this.apiKey,
+      apiKeyPrefix: this.apiKey ? this.apiKey.substring(0, 10) + '...' : 'none',
     });
 
     try {
+      // API 키를 쿼리 파라미터로도 추가 (일부 API는 둘 다 필요할 수 있음)
+      const url = `${this.baseUrl}/models/${modelName}:generateContent?key=${encodeURIComponent(this.apiKey)}`;
+      
       const response = await axios.post(
-        `${this.baseUrl}/models/${modelName}:generateContent`,
+        url,
         {
           contents: [{
             parts: [
@@ -85,7 +89,8 @@ class AIService {
           }],
           generationConfig: {
             imageConfig: {
-              aspectRatio: aspectRatio
+              aspectRatio: aspectRatio,
+              ...(modelName.includes('3-pro-image-preview') && { imageSize: '2K' })
             }
           }
         },
@@ -97,31 +102,52 @@ class AIService {
         },
       );
 
-      if (!response.data || !response.data.candidates || response.data.candidates.length === 0) {
+      console.log('API 응답 받음 (상위 구조):', {
+        hasData: !!response.data,
+        hasCandidates: !!response.data?.candidates,
+        candidatesLength: response.data?.candidates?.length,
+        status: response.status,
+      });
+
+      if (!response.data) {
         throw new Error('API 응답이 없습니다.');
+      }
+
+      if (!response.data.candidates || response.data.candidates.length === 0) {
+        console.error('API 응답 데이터 (candidates 없음):', JSON.stringify(response.data, null, 2));
+        throw new Error('API 응답에 candidates가 없습니다.');
       }
 
       const candidate = response.data.candidates[0];
       if (!candidate.content || !candidate.content.parts) {
+        console.error('API 응답 구조:', JSON.stringify(response.data, null, 2));
         throw new Error('API 응답에 콘텐츠가 없습니다.');
       }
 
       const images: AIImageResponse[] = [];
       
+      console.log('API 응답 parts:', JSON.stringify(candidate.content.parts, null, 2));
+      
       for (const part of candidate.content.parts) {
+        // 여러 가능한 응답 형식 확인
         if (part.inlineData && part.inlineData.data) {
           // Base64 이미지를 data URL로 변환
-          const imageUrl = `data:image/png;base64,${part.inlineData.data}`;
+          const mimeType = part.inlineData.mimeType || 'image/png';
+          const imageUrl = `data:${mimeType};base64,${part.inlineData.data}`;
           images.push({
             imageUrl: imageUrl,
             revisedPrompt: options.prompt,
           });
+        } else if (part.text) {
+          console.log('Part contains text:', part.text);
+        } else {
+          console.log('Part structure:', Object.keys(part));
         }
       }
 
       if (images.length === 0) {
-        console.error('API 응답 데이터:', response.data);
-        throw new Error('API 응답에 이미지 데이터가 없습니다.');
+        console.error('API 응답 전체 데이터:', JSON.stringify(response.data, null, 2));
+        throw new Error('API 응답에 이미지 데이터가 없습니다. 응답 구조를 콘솔에서 확인하세요.');
       }
 
       console.log('생성된 이미지 개수:', images.length);
@@ -144,6 +170,15 @@ class AIService {
         errorMessage = error.response.data.message;
       } else if (error.message) {
         errorMessage = error.message;
+      }
+      
+      // 429 오류 (할당량 초과)에 대한 친절한 안내
+      if (error.response?.status === 429) {
+        errorMessage = 'API 할당량을 초과했습니다. 무료 티어의 경우 이미지 생성 API 사용량이 제한되어 있을 수 있습니다. 다음을 확인해주세요:\n' +
+          '1. Google AI Studio에서 할당량 확인: https://ai.dev/usage?tab=rate-limit\n' +
+          '2. 유료 플랜으로 업그레이드하거나 할당량이 충분한지 확인\n' +
+          '3. 24시간 후 다시 시도\n' +
+          '\n원본 오류: ' + errorMessage;
       }
       
       throw new Error(errorMessage);

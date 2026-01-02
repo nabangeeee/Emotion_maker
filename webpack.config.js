@@ -24,7 +24,9 @@ module.exports = {
                 },
                 modules: false
               }],
-              '@babel/preset-react',
+              ['@babel/preset-react', {
+                runtime: 'automatic'
+              }],
             ],
             plugins: [
               [
@@ -38,6 +40,7 @@ module.exports = {
                 },
               ],
             ],
+            cacheDirectory: true,
           },
         },
       },
